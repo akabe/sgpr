@@ -1,5 +1,5 @@
 # OASIS_START
-# DO NOT EDIT (digest: 00c53e1c61312b545dba5d82d02f6a4e)
+# DO NOT EDIT (digest: 87dcd82995c04b83734645b7218d374e)
 # Ignore VCS directories, you can use the same kind of rule outside
 # OASIS_START/STOP if you want to exclude directories that contains
 # useless stuff for the build process
@@ -13,55 +13,44 @@
 ".git": not_hygienic
 "_darcs": -traverse
 "_darcs": not_hygienic
-# Library gpr
-"lib/gpr.cmxs": use_gpr
-"lib/interfaces.cmx": for-pack(Gpr)
-"lib/gpr_utils.cmx": for-pack(Gpr)
-"lib/block_diag.cmx": for-pack(Gpr)
-"lib/cov_const.cmx": for-pack(Gpr)
-"lib/cov_lin_ard.cmx": for-pack(Gpr)
-"lib/cov_lin_one.cmx": for-pack(Gpr)
-"lib/cov_se_iso.cmx": for-pack(Gpr)
-"lib/cov_se_fat.cmx": for-pack(Gpr)
-"lib/fitc_gp.cmx": for-pack(Gpr)
-"lib/version.cmx": for-pack(Gpr)
+# Library sgpr
+"lib/sgpr.cmxs": use_sgpr
+"lib/interfaces.cmx": for-pack(Sgpr)
+"lib/gpr_utils.cmx": for-pack(Sgpr)
+"lib/block_diag.cmx": for-pack(Sgpr)
+"lib/cov_const.cmx": for-pack(Sgpr)
+"lib/cov_lin_ard.cmx": for-pack(Sgpr)
+"lib/cov_lin_one.cmx": for-pack(Sgpr)
+"lib/cov_se_iso.cmx": for-pack(Sgpr)
+"lib/cov_se_fat.cmx": for-pack(Sgpr)
+"lib/fitc_gp.cmx": for-pack(Sgpr)
+"lib/version.cmx": for-pack(Sgpr)
 <lib/*.ml{,i}>: pkg_threads
 <lib/*.ml{,i}>: pkg_core
-<lib/*.ml{,i}>: pkg_lacaml
+<lib/*.ml{,i}>: pkg_slap
 <lib/*.ml{,i}>: pkg_gsl
 # Executable ocaml_gpr
-<app/ocaml_gpr.{native,byte}>: use_gpr
+<app/ocaml_gpr.{native,byte}>: use_sgpr
 <app/ocaml_gpr.{native,byte}>: pkg_str
 <app/ocaml_gpr.{native,byte}>: pkg_threads
 <app/ocaml_gpr.{native,byte}>: pkg_core
-<app/ocaml_gpr.{native,byte}>: pkg_lacaml
+<app/ocaml_gpr.{native,byte}>: pkg_slap
 <app/ocaml_gpr.{native,byte}>: pkg_gsl
-<app/*.ml{,i}>: use_gpr
+<app/*.ml{,i}>: use_sgpr
 <app/*.ml{,i}>: pkg_str
 <app/*.ml{,i}>: pkg_threads
 <app/*.ml{,i}>: pkg_core
-<app/*.ml{,i}>: pkg_lacaml
+<app/*.ml{,i}>: pkg_slap
 <app/*.ml{,i}>: pkg_gsl
 # Executable test_derivatives
-<test/test_derivatives.{native,byte}>: use_gpr
+<test/test_derivatives.{native,byte}>: use_sgpr
 <test/test_derivatives.{native,byte}>: pkg_threads
 <test/test_derivatives.{native,byte}>: pkg_core
-<test/test_derivatives.{native,byte}>: pkg_lacaml
+<test/test_derivatives.{native,byte}>: pkg_slap
 <test/test_derivatives.{native,byte}>: pkg_gsl
-# Executable save_data
-<test/save_data.{native,byte}>: use_gpr
-<test/save_data.{native,byte}>: pkg_threads
-<test/save_data.{native,byte}>: pkg_core
-<test/save_data.{native,byte}>: pkg_lacaml
-<test/save_data.{native,byte}>: pkg_gsl
-<test/*.ml{,i}>: use_gpr
+<test/*.ml{,i}>: use_sgpr
 <test/*.ml{,i}>: pkg_threads
 <test/*.ml{,i}>: pkg_core
-<test/*.ml{,i}>: pkg_lacaml
+<test/*.ml{,i}>: pkg_slap
 <test/*.ml{,i}>: pkg_gsl
 # OASIS_STOP
-
-true: -traverse
-<{lib,app,test}/**>: traverse
-
-<**/*.ml{,i}>: warn(Aer-44), strict_sequence, annot

@@ -1,7 +1,12 @@
 (* File: block_diag.ml
 
-   OCaml-GPR - Gaussian Processes for OCaml
+   Sized GPR - OCaml-GPR with static size checking of operations on matrices
 
+   [Authors of Sized GPR]
+     Copyright (C) 2014-  Akinori ABE
+     email: abe@kb.ecei.tohoku.ac.jp
+
+   [Authors of OCaml-GPR]
      Copyright (C) 2009-  Markus Mottl
      email: markus.mottl@gmail.com
      WWW:   http://www.ocaml.info
@@ -22,18 +27,19 @@
 *)
 
 open Core.Std
-open Lacaml.D
+open Slap.D (*! RID *)
 
-type t = { data : mat array; n : int }
+type 'n t = { data : ('n, 'n, Slap.cnt) mat array; n : int } (*! ITP *)
 
 let check_square (i, size) mat =
-  let m = Mat.dim1 mat in
+  (* let m = Mat.dim1 mat in *) (*! RMDC *)
   let n = Mat.dim2 mat in
-  if m = n then i + 1, size + n
-  else
-    failwithf
-      "Block_diag.check_square: matrix at index %d not square: m = %d, n = %d"
-      i m n ()
+  i + 1, size + (Slap.Size.to_int n) (*! S2I *)
+  (* if m = n then i + 1, size + n *) (*! RMDC *)
+  (* else *) (*! RMDC *)
+  (*   failwithf *) (*! RMDC *)
+  (*     "Block_diag.check_square: matrix at index %d not square: m = %d, n = %d" *) (*! RMDC *)
+  (*     i m n () *) (*! RMDC *)
 
 let create data =
   { data; n = snd (Array.fold ~f:check_square ~init:(0, 0) data) }

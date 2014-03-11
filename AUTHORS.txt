@@ -1,8 +1,9 @@
 (* OASIS_START *)
-(* DO NOT EDIT (digest: d5b7cfbef6452ae255b061c7745dfbe0) *)
-Authors of gpr
+(* DO NOT EDIT (digest: a59e064ca0f138c7862ea92590013d3f) *)
+Authors of sgpr
+Akinori ABE <abe@kb.ecei.tohoku.ac.jp>
 Markus Mottl <markus.mottl@gmail.com>
 
-Current maintainers of gpr
-Markus Mottl <markus.mottl@gmail.com>
+Current maintainers of sgpr
+Akinori ABE <abe@kb.ecei.tohoku.ac.jp>
 (* OASIS_STOP *)

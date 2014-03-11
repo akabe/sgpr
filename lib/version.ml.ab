@@ -1,7 +1,12 @@
 (* File: version.ml
 
-   OCaml-GPR - Gaussian Processes for OCaml
+   Sized GPR - OCaml-GPR with static size checking of operations on matrices
 
+   [Authors of Sized GPR]
+     Copyright (C) 2014-  Akinori ABE
+     email: abe@kb.ecei.tohoku.ac.jp
+
+   [Authors of OCaml-GPR]
      Copyright (C) 2012-  Markus Mottl
      email: markus.mottl@gmail.com
      WWW:   http://www.ocaml.info

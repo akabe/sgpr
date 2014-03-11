@@ -1,7 +1,12 @@
 (* File: ocaml_gpr.ml
 
-   OCaml-GPR - Gaussian Processes for OCaml
+   Sized GPR - OCaml-GPR with static size checking of operations on matrices
 
+   [Authors of Sized GPR]
+     Copyright (C) 2014-  Akinori ABE
+     email: abe@kb.ecei.tohoku.ac.jp
+
+   [Authors of OCaml-GPR]
      Copyright (C) 2009-  Markus Mottl
      email: markus.mottl@gmail.com
      WWW:   http://www.ocaml.info
@@ -193,35 +198,35 @@ let read_samples () =
       in
       loop [sample]
 
-open Lacaml.D
+open Slap.D (*! RID *)
 
-open Gpr
+open Sgpr (*! RID *)
 
 module GP = Fitc_gp.Make_deriv (Cov_se_fat.Deriv)
 module FIC = GP.Variational_FIC.Eval
 
 module Model = struct
-  type t = {
+  type ('a, 'b, 'c, 'd, 'e, 'f, 'g, 'h, 'i) t = { (*! ITP *)
     sigma2 : float;
     target_mean : float;
-    input_means : vec;
-    input_stddevs : vec;
-    kernel : Cov_se_fat.Eval.Kernel.t;
-    inducing_points : FIC.Spec.Inducing.t;
-    coeffs : vec;
-    co_variance_coeffs : FIC.Model.co_variance_coeffs;
+    input_means : ('a, Slap.cnt) vec; (*! ITP *)
+    input_stddevs : ('b, Slap.cnt) vec; (*! ITP *)
+    kernel : ('c, 'd, 'e) Cov_se_fat.Eval.Kernel.t; (*! ITP *)
+    inducing_points : ('f, 'g) FIC.Spec.Inducing.t; (*! ITP *)
+    coeffs : ('h, Slap.cnt) vec; (*! ITP *)
+    co_variance_coeffs : 'i FIC.Model.co_variance_coeffs; (*! ITP *)
   }
 end
 
-let read_training_samples () =
-  let samples = read_samples () in
-  let n = Array.length samples in
-  let d = Array.length samples.(0) - 1 in
+let read_training_samples samples n d = (*! EGPT[3] *)
+(*   let samples = read_samples () in *) (*! EGPT[3] *)
+(*   let n = Array.length samples in *) (*! EGPT[3] *)
+(*   let d = Array.length samples.(0) - 1 in *) (*! EGPT[3] *)
   let inputs = Mat.create d n in
   let targets = Vec.create n in
   Array.iteri samples ~f:(fun c0 sample ->
-    for r1 = 1 to d do inputs.{r1, c0 + 1} <- sample.(r1 - 1) done;
-    targets.{c0 + 1} <- sample.(d));
+    for r1 = 1 to Slap.Size.to_int d (*! S2I *) do Mat.set_dyn inputs r1 (c0 + 1) sample.(r1 - 1) (*! IDX *) done;
+    Vec.set_dyn targets (c0 + 1) sample.(Slap.Size.to_int d)); (*! S2I,IDX *)
   inputs, targets
 
 let write_model model_file ~target_mean ~input_means ~input_stddevs trained =
@@ -254,124 +259,131 @@ let train args =
       log_het_sked; multiscale; tol; step; eps = epsabs; verbose
     } = args
   in
-  let inputs, targets = read_training_samples () in
+  let samples = read_samples () in (*! EGPT[3] *)
+  let module N = Slap.Size.Of_int_dyn(struct let value = Array.length samples end) in (*! EGPT[3] *)
+  let module D = Slap.Size.Of_int_dyn(struct let value = Array.length samples.(0) - 1 end) in (*! EGPT[3] *)
+  let inputs, targets = read_training_samples samples N.value D.value (*! EGPT[3] *) in
   let big_dim = Mat.dim1 inputs in
   let n_inputs = Mat.dim2 inputs in
-  let f_inputs = float n_inputs in
-  let calc_mean vec = Vec.sum vec /. float (Vec.dim vec) in
+  let f_inputs = float (Slap.Size.to_int n_inputs) (*! S2I *) in
+  let calc_mean vec = Vec.sum vec /. float (Slap.Size.to_int (Vec.dim vec)) (*! S2I *) in
   let target_mean = calc_mean targets in
   let targets = Vec.map (fun n -> n -. target_mean) targets in
   let target_variance = Vec.sqr_nrm2 targets /. f_inputs in
   if verbose then eprintf "target variance: %.5f\n%!" target_variance;
   let input_means = Vec.create big_dim in
   let input_stddevs = Vec.create big_dim in
-  for i = 1 to big_dim do
-    let input = Mat.copy_row inputs i in
+  for i = 1 to Slap.Size.to_int big_dim (*! S2I *) do
+    let input = Mat.copy_row_dyn (*! RID *) inputs i in
     let mean = calc_mean input in
-    input_means.{i} <- mean;
+    Vec.set_dyn input_means i mean; (*! IDX *)
     let stddev = sqrt (Vec.ssqr ~c:mean input) in
-    input_stddevs.{i} <- stddev;
-    for j = 1 to n_inputs do
-      inputs.{i, j} <- (inputs.{i, j} -. mean) /. stddev;
+    Vec.set_dyn input_stddevs i stddev; (*! IDX *)
+    for j = 1 to Slap.Size.to_int n_inputs (*! S2I *) do
+      Mat.set_dyn inputs i j ((Mat.get_dyn inputs i j -. mean) /. stddev); (*! IDX *)
     done;
   done;
-  let n_inducing = min n_inducing (Vec.dim targets) in
+  let module M = Slap.Size.Of_int_dyn(struct let value = n_inducing end) in (*! I2S *)
+  let n_inducing = Slap.Size.min M.value (*! I2S *) (Vec.dim targets) (*! SOP *) in
   Random.self_init ();
-  let params =
+  let f d tproj = (*! ET[1] *)
     let log_sf2 = 2. *. log amplitude in
-    let d, tproj =
-      match dim_red with
-      | None -> big_dim, None
-      | Some small_dim ->
-          let small_dim = min big_dim small_dim in
-          let tproj = Mat.random big_dim small_dim in
-          Mat.scal (1. /. float big_dim) tproj;
-          small_dim, Some tproj
-    in
-    let log_hetero_skedasticity =
-      match log_het_sked with
-      | Some log_het_sked -> Some (Vec.make n_inducing log_het_sked)
-      | None -> None
-    in
-    let log_multiscales_m05 =
-      if multiscale then Some (Mat.make0 d n_inducing)
-      else None
-    in
-    Cov_se_fat.Params.create
-      {
-        Cov_se_fat.Params.
-        d; log_sf2; tproj; log_hetero_skedasticity; log_multiscales_m05
-      }
-  in
-  let kernel = Cov_se_fat.Eval.Kernel.create params in
-  let get_trained_stats trained =
-    let { FIC.Stats.smse; msll; mad; maxad } = FIC.Stats.calc trained in
-    sprintf
-      "MSLL=%7.7f SMSE=%7.7f MAD=%7.7f MAXAD=%7.7f"
-      msll smse mad maxad
-  in
-  let best_trained = ref None in
-  let report_trained_model, report_gradient_norm =
-    let got_signal = ref false in
-    Signal.Expert.set Signal.int (`Handle (fun _ -> got_signal := true));
-    let bailout ~iter _ =
-      if !got_signal then raise Bailout;
-      match max_iter with
-      | Some max_iter when iter > max_iter -> raise Bailout
-      | _ -> ()
-    in
-    if verbose then
-      let last_eval_time = ref 0. in
-      let last_deriv_time = ref 0. in
-      let maybe_print last_time line =
-        let now = Unix.gettimeofday () in
-        if !last_time +. 1. < now then begin
-          last_time := now;
-          prerr_endline line;
-        end
+    let params = (*! ET[1] *)
+      let log_hetero_skedasticity =
+        match log_het_sked with
+        | Some log_het_sked -> Some (Vec.make n_inducing log_het_sked)
+        | None -> None
       in
-      Some (fun ~iter trained ->
-        best_trained := Some trained;
-        bailout ~iter ();
-        maybe_print last_eval_time
-          (sprintf "iter %4d: %s" iter (get_trained_stats trained))),
-      Some (fun ~iter norm ->
-        bailout ~iter ();
-        maybe_print last_deriv_time
-          (sprintf "iter %4d: |gradient|=%.5f" iter norm))
-    else Some bailout, None
-  in
-  match
-    try
-      Some (
-        GP.Variational_FIC.Deriv.Optim.Gsl.train
-          ?report_trained_model ?report_gradient_norm
-          ~kernel ~sigma2 ~n_rand_inducing:n_inducing
-          ~tol ~step ~epsabs ~inputs ~targets ())
-    with GP.FIC.Deriv.Optim.Gsl.Optim_exception Bailout -> !best_trained
-  with
-  | None -> ()
-  | Some trained ->
-      if verbose then eprintf "result: %s\n%!" (get_trained_stats trained);
-      write_model model_file ~target_mean ~input_means ~input_stddevs trained
+      let log_multiscales_m05 =
+        if multiscale then Some (Mat.make0 d n_inducing)
+        else None
+      in
+      Cov_se_fat.Params.create
+        {
+          Cov_se_fat.Params.
+          d; log_sf2; tproj; log_hetero_skedasticity; log_multiscales_m05
+        }
+    in
+    let kernel = Cov_se_fat.Eval.Kernel.create params in
+    let get_trained_stats trained =
+      let { FIC.Stats.smse; msll; mad; maxad } = FIC.Stats.calc trained in
+      sprintf
+        "MSLL=%7.7f SMSE=%7.7f MAD=%7.7f MAXAD=%7.7f"
+        msll smse mad maxad
+    in
+    let best_trained = ref None in
+    let report_trained_model, report_gradient_norm =
+      let got_signal = ref false in
+      Signal.Expert.set Signal.int (`Handle (fun _ -> got_signal := true));
+      let bailout ~iter _ =
+        if !got_signal then raise Bailout;
+        match max_iter with
+        | Some max_iter when iter > max_iter -> raise Bailout
+        | _ -> ()
+      in
+      if verbose then
+        let last_eval_time = ref 0. in
+        let last_deriv_time = ref 0. in
+        let maybe_print last_time line =
+          let now = Unix.gettimeofday () in
+          if !last_time +. 1. < now then begin
+                                        last_time := now;
+                                        prerr_endline line;
+                                      end
+        in
+        Some (fun ~iter trained ->
+              best_trained := Some trained;
+              bailout ~iter ();
+              maybe_print last_eval_time
+                          (sprintf "iter %4d: %s" iter (get_trained_stats trained))),
+        Some (fun ~iter norm ->
+              bailout ~iter ();
+              maybe_print last_deriv_time
+                          (sprintf "iter %4d: |gradient|=%.5f" iter norm))
+      else Some bailout, None
+    in
+    let hypers = GP.FIC.Deriv.Optim.get_default_hypers ~kernel ~n_rand_inducing:n_inducing ~inputs in (*! EGPT[2] *)
+    let module N = Slap.Size.Of_int_dyn(struct let value = Array.length hypers end) in (*! EGPT[2] *)
+    match
+      try
+        Some (
+            GP.Variational_FIC.Deriv.Optim.Gsl.train
+              ?report_trained_model ?report_gradient_norm
+              ~kernel ~sigma2 ~n_rand_inducing:n_inducing
+              ~hypers ~n_hypers:N.value (*! EGPT[2] *) ~tol ~step ~epsabs ~inputs ~targets ())
+      with GP.FIC.Deriv.Optim.Gsl.Optim_exception Bailout -> !best_trained
+    with
+    | None -> ()
+    | Some trained ->
+       if verbose then eprintf "result: %s\n%!" (get_trained_stats trained);
+       write_model model_file ~target_mean ~input_means ~input_stddevs trained
+  in (*! ET[1] *)
+  match dim_red with (*! ET[1] *)
+  | None -> f big_dim Cov_se_fat.Params.tproj_none (*! ET[1] *)
+  | Some small_dim -> (*! ET[1] *)
+     let module K = Slap.Size.Of_int_dyn(struct let value = small_dim end) in (*! I2S *) (*! ET[1] *)
+     let small_dim = Slap.Size.min big_dim K.value (*! I2S,SOP *) in (*! ET[1] *)
+     let tproj = Mat.random big_dim small_dim in (*! ET[1] *)
+     Mat.scal (1. /. float (Slap.Size.to_int big_dim (*! S2I *))) tproj; (*! ET[1] *)
+     f small_dim (Cov_se_fat.Params.tproj_some tproj) (*! ET[1] *)
 
-let read_test_samples big_dim =
-  let samples = read_samples () in
-  let n = Array.length samples in
-  if n = 0 then Mat.empty
-  else begin
+let read_test_samples big_dim samples n (*! EGPT[3] *) =
+  (* let samples = read_samples () in *) (*! EGPT[3] *)
+  (* let n = Array.length samples in *) (*! EGPT[3] *)
+  (* if n = 0 then Mat.empty *) (*! FT[3] *)
+  (* else *) begin (*! FT[3] *)
     let input_dim = Array.length samples.(0) in
-    if input_dim <> big_dim then
+    if input_dim <> Slap.Size.to_int big_dim (*! S2I *) then
       failwithf
         "incompatible dimension of inputs (%d), expected %d"
-        input_dim big_dim ();
+        input_dim (Slap.Size.to_int big_dim (*! S2I *)) ();
     let inputs = Mat.create big_dim n in
     Array.iteri samples ~f:(fun c0 sample ->
-      for r1 = 1 to big_dim do inputs.{r1, c0 + 1} <- sample.(r1 - 1) done);
+      for r1 = 1 to Slap.Size.to_int big_dim (*! S2I *) do Mat.set_dyn inputs r1 (c0 + 1) sample.(r1 - 1) (*! IDX *) done);
     inputs
   end
 
-let read_model model_file : Model.t =
+let read_model model_file : (_,_,_,_,_,_,_,_,_) Model.t (*! ITP *) =
   let ic = open_in model_file in
   let model = Marshal.from_channel ic in
   In_channel.close ic;
@@ -387,30 +399,37 @@ let test args =
     } = read_model model_file
   in
   let big_dim = Vec.dim input_stddevs in
-  let inputs = read_test_samples big_dim in
-  let n_inputs = Mat.dim2 inputs in
-  for i = 1 to big_dim do
-    let mean = input_means.{i} in
-    let stddev = input_stddevs.{i} in
-    for j = 1 to n_inputs do
-      inputs.{i, j} <- (inputs.{i, j} -. mean) /. stddev;
+  (* let inputs = read_test_samples big_dim in *) (*! ET[2],FT[3] *)
+  let f inputs = (*! ET[2] *)
+    let n_inputs = Mat.dim2 inputs in
+    for i = 1 to Slap.Size.to_int big_dim (*! S2I *) do
+      let mean = Vec.get_dyn input_means i in (*! IDX *)
+      let stddev = Vec.get_dyn input_stddevs i in (*! IDX *)
+      for j = 1 to Slap.Size.to_int n_inputs (*! S2I *) do
+        Mat.set_dyn inputs i j ((Mat.get_dyn inputs i j -. mean) /. stddev); (*! IDX *)
+      done;
     done;
-  done;
-  let mean_predictor = FIC.Mean_predictor.calc inducing_points ~coeffs in
-  let inducing = FIC.Inducing.calc kernel inducing_points in
-  let inputs = FIC.Inputs.calc inputs inducing in
-  let means = FIC.Means.get (FIC.Means.calc mean_predictor inputs) in
-  let renorm_mean mean = mean +. target_mean in
-  if with_stddev then
-    let co_variance_predictor =
-      FIC.Co_variance_predictor.calc kernel inducing_points co_variance_coeffs
-    in
-    let vars = FIC.Variances.calc co_variance_predictor ~sigma2 inputs in
-    let vars = FIC.Variances.get ~predictive vars in
-    Vec.iteri (fun i pre_mean ->
-      let mean = renorm_mean pre_mean in
-      printf "%f,%f\n" mean (sqrt vars.{i})) means
-  else Vec.iter (fun mean -> printf "%f\n" (renorm_mean mean)) means
+    let mean_predictor = FIC.Mean_predictor.calc inducing_points ~coeffs in
+    let inducing = FIC.Inducing.calc kernel inducing_points in
+    let inputs = FIC.Inputs.calc inputs inducing in
+    let means = FIC.Means.get (FIC.Means.calc mean_predictor inputs) in
+    let renorm_mean mean = mean +. target_mean in
+    if with_stddev then
+      let co_variance_predictor =
+        FIC.Co_variance_predictor.calc kernel inducing_points co_variance_coeffs
+      in
+      let vars = FIC.Variances.calc co_variance_predictor ~sigma2 inputs in
+      let vars = FIC.Variances.get ~predictive vars in
+      Vec.iteri (fun i pre_mean ->
+                 let mean = renorm_mean pre_mean in
+                 printf "%f,%f\n" mean (sqrt (Vec.get_dyn vars i) (*! IDX *))) means
+    else Vec.iter (fun mean -> printf "%f\n" (renorm_mean mean)) means
+  in (*! ET[2] *)
+  let samples = read_samples () in (*! EGPT[3] *)
+  let module N = Slap.Size.Of_int_dyn(struct let value = Array.length samples end) in (*! EGPT[3] *)
+  if Slap.Size.to_int N.value (*! S2I *) = 0 (*! FT[3] *)
+  then f Mat.empty (*! FT[3],ET[2] *)
+  else f (read_test_samples big_dim samples N.value (*! EGPT[3] *)) (*! FT[3],ET[2] *)
 
 let main () =
   let args = Args.get () in

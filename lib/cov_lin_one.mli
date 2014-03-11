@@ -1,7 +1,12 @@
 (* File: cov_lin_one.mli
 
-   OCaml-GPR - Gaussian Processes for OCaml
+   Sized GPR - OCaml-GPR with static size checking of operations on matrices
 
+   [Authors of Sized GPR]
+     Copyright (C) 2014-  Akinori ABE
+     email: abe@kb.ecei.tohoku.ac.jp
+
+   [Authors of OCaml-GPR]
      Copyright (C) 2009-  Markus Mottl
      email: markus.mottl@gmail.com
      WWW:   http://www.ocaml.info
@@ -31,18 +36,19 @@
     where P is a diagonal matrix containing [t^2] along the diagonal.
 *)
 
-open Lacaml.D
+open Slap.D (*! RID *)
 
 open Interfaces.Specs
 
-module Params : sig type t = { log_theta : float } end
+module Params : sig type ('D, 'd, 'm) t (*! ITP,FS[1] *)
+                    val create : float -> ('d, 'd, 'm) t (*! FS[1] *) end
 
 module Eval :
   Eval
-    with type Kernel.params = Params.t
-    with type Inducing.t = mat
-    with type Input.t = vec
-    with type Inputs.t = mat
+    with type ('D, 'd, 'm) Kernel.params = ('D, 'd, 'm) Params.t (*! ITP *)
+    with type ('m, 'n) Inducing.t = ('m, 'n, Slap.cnt) mat (*! ITP *)
+    with type 'n Input.t = ('n, Slap.cnt) vec (*! ITP *)
+    with type ('m, 'n) Inputs.t = ('m, 'n, Slap.cnt) mat (*! ITP *)
 
 module Deriv :
   Deriv

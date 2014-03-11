@@ -1,7 +1,12 @@
 (* File: cov_se_fat.mli
 
-   OCaml-GPR - Gaussian Processes for OCaml
+   Sized GPR - OCaml-GPR with static size checking of operations on matrices
 
+   [Authors of Sized GPR]
+     Copyright (C) 2014-  Akinori ABE
+     email: abe@kb.ecei.tohoku.ac.jp
+
+   [Authors of OCaml-GPR]
      Copyright (C) 2009-  Markus Mottl
      email: markus.mottl@gmail.com
      WWW:   http://www.ocaml.info
@@ -46,30 +51,34 @@
     features and can be easily turned off by setting the parameters to [None].
 *)
 
-open Lacaml.D
+open Slap.D (*! RID *)
 
 open Interfaces.Specs
 
 module Params : sig
-  type params = {
-    d : int;
+  type ('D, 'd) tproj (*! FT[2] *)
+  val tproj_none : ('d, 'd) tproj (*! FT[2] *)
+  val tproj_some : ('D, 'd, Slap.cnt) mat -> ('D, 'd) tproj (*! FT[2] *)
+
+  type ('D, 'd, 'm) params = { (*! ITP *)
+    d : 'd Slap.Size.t; (*! ITP *)
     log_sf2 : float;
-    tproj : mat option;
-    log_hetero_skedasticity : vec option;
-    log_multiscales_m05 : mat option;
+    tproj : ('D, 'd) tproj; (*! FT[2] *)
+    log_hetero_skedasticity : ('m, Slap.cnt) vec option; (*! ITP *)
+    log_multiscales_m05 : ('d, 'm, Slap.cnt) mat option; (*! ITP *)
   }
 
-  type t = private params
+  type ('D, 'd, 'm) t = private ('D, 'd, 'm) params (*! ITP *)
 
-  val create : params -> t
+  val create : ('D, 'd, 'm) params -> ('D, 'd, 'm) t (*! ITP *)
 end
 
 module Eval :
   Eval
-    with type Kernel.params = Params.t
-    with type Inducing.t = mat
-    with type Input.t = vec
-    with type Inputs.t = mat
+    with type ('D, 'd, 'm) Kernel.params = ('D, 'd, 'm) Params.t (*! ITP *)
+    with type ('m, 'n) Inducing.t = ('m, 'n, Slap.cnt) mat (*! ITP *)
+    with type 'n Input.t = ('n, Slap.cnt) vec (*! ITP *)
+    with type ('m, 'n) Inputs.t = ('m, 'n, Slap.cnt) mat (*! ITP *)
 
 
 (* Derivatives *)

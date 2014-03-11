@@ -1,7 +1,12 @@
 (* File: cov_const.ml
 
-   OCaml-GPR - Gaussian Processes for OCaml
+   Sized GPR - OCaml-GPR with static size checking of operations on matrices
 
+   [Authors of Sized GPR]
+     Copyright (C) 2014-  Akinori ABE
+     email: abe@kb.ecei.tohoku.ac.jp
+
+   [Authors of OCaml-GPR]
      Copyright (C) 2009-  Markus Mottl
      email: markus.mottl@gmail.com
      WWW:   http://www.ocaml.info
@@ -22,14 +27,15 @@
 *)
 
 open Core.Std
-open Lacaml.D
+open Slap.D (*! RID *)
 
-module Params = struct type t = { log_theta : float } end
+module Params = struct type ('D, 'd, 'm) t = { log_theta : float } (*! ITP,FS[1] *)
+                       let create log_theta = { log_theta } (*! FS[1] *) end
 
 module Eval = struct
   module Kernel = struct
-    type params = Params.t
-    type t = { params : params; const : float }
+    type ('D, 'd, 'm) params = ('D, 'd, 'm) Params.t (*! ITP *)
+    type ('D, 'd, 'm) t = { params : ('D, 'd, 'm) params; const : float } (*! ITP *)
 
     let create params = { params; const = exp (-2. *. params.Params.log_theta) }
 
@@ -37,14 +43,14 @@ module Eval = struct
   end
 
   module Inducing = struct
-    type t = int
+    type ('m, 'n) t = 'n Slap.Size.t (*! ITP,FS[1] *)
 
     let calc_upper k m = Mat.make m m k.Kernel.const
     let get_n_points m = m
   end
 
   module Input = struct
-    type t = unit
+    type 'n t = unit (*! ITP,FS[1] *)
 
     let eval k () m = Vec.make m k.Kernel.const
     let weighted_eval k () _ ~coeffs = k.Kernel.const *. Vec.sum coeffs
@@ -52,12 +58,14 @@ module Eval = struct
   end
 
   module Inputs = struct
-    type t = int
+    type ('m, 'n) t = 'n Slap.Size.t (*! ITP,FS[1] *)
 
-    let create = Array.length
+    let create _ n a = if Slap.Size.to_int n (*! S2I *) = Array.length a then n else invalid_arg "Gpr.Cov_const.Eval.Inputs.create" (*! EGPT[1] *)
     let get_n_points n = n
-    let choose_subset _inputs indexes = Bigarray.Array1.dim indexes
+    let choose_subset _inputs indexes = Slap.Vec.dim indexes (*! RID *)
     let create_inducing _kernel n = n
+
+    type 'D default_kernel_size = 'D (*! DKS[1] *)
 
     let create_default_kernel_params _inputs ~n_inducing:_ =
       { Params.log_theta = 0. }
@@ -90,7 +98,7 @@ module Deriv = struct
       let kernel_changed_ref = ref false in
       for i = 1 to Array.length hypers do
         match hypers.(i - 1) with
-        | `Log_theta -> log_theta_ref := values.{i}; kernel_changed_ref := true
+        | `Log_theta -> log_theta_ref := (Vec.get_dyn values i) (*! IDX *); kernel_changed_ref := true
       done;
       let new_kernel =
         if !kernel_changed_ref then
@@ -103,17 +111,17 @@ module Deriv = struct
   let calc_const_deriv k = -2. *. k.Eval.Kernel.const
 
   module Inducing = struct
-    type upper = { m : int; deriv_const : float }
+    type ('D, 'd, 'm, 'n) upper = { m : int; deriv_const : float } (*! ITP,FS[1] *)
 
     let calc_shared_upper k m =
-      Eval.Inducing.calc_upper k m, { m; deriv_const = calc_const_deriv k }
+      Eval.Inducing.calc_upper k m, { m = Slap.Size.to_int m (*! S2I *); deriv_const = calc_const_deriv k }
 
     let calc_deriv_upper shared `Log_theta = `Const shared.deriv_const
   end
 
   module Inputs = struct
-    type diag = { diag_eval_inputs : Eval.Inputs.t; diag_const_deriv : float }
-    type cross = { cross_const_deriv : float }
+    type ('D, 'd, 'm, 'n) diag = { diag_eval_inputs : ('D, 'n) Eval.Inputs.t; diag_const_deriv : float } (*! ITP,FS[1] *)
+    type ('D, 'd, 'm, 'n) cross = { cross_const_deriv : float } (*! ITP,FS[1] *)
 
     let calc_shared_diag k diag_eval_inputs =
       (

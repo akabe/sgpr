@@ -1,7 +1,12 @@
 (* File: test_derivatives.ml
 
-   OCaml-GPR - Gaussian Processes for OCaml
+   Sized GPR - OCaml-GPR with static size checking of operations on matrices
 
+   [Authors of Sized GPR]
+     Copyright (C) 2014-  Akinori ABE
+     email: abe@kb.ecei.tohoku.ac.jp
+
+   [Authors of OCaml-GPR]
      Copyright (C) 2009-  Markus Mottl
      email: markus.mottl@gmail.com
      WWW:   http://www.ocaml.info
@@ -22,18 +27,22 @@
 *)
 
 open Core.Std
-open Lacaml.D
+open Slap.D
 
-open Gpr
+open Sgpr
 
 module GP = Fitc_gp.Make_deriv (Cov_se_fat.Deriv)
 module FITC = GP.FITC
 
+module M = Slap.Size.Of_int_dyn(struct let value = 5 end)
+module D = Slap.Size.Of_int_dyn(struct let value = 3 end)
+module N = Slap.Size.Of_int_dyn(struct let value = 10 end)
+
 let main () =
   Random.self_init ();
-  let n_inducing = 5 in
-  let training_inputs = Mat.random 3 10 in
-  let training_targets = Vec.random 10 in
+  let n_inducing = M.value in
+  let training_inputs = Mat.random D.value N.value in
+  let training_targets = Vec.random N.value in
   let params =
     Cov_se_fat.Eval.Inputs.create_default_kernel_params
       ~n_inducing training_inputs
