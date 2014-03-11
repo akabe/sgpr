@@ -1,0 +1,89 @@
+OASISFormat:      0.4
+Name:             gpr
+Version:          1.1.3
+Synopsis:         GPR - Library and Application for Gaussian Process Regression
+Description:      Gaussian process regression is a modern Bayesian approach to machine learning, and GPR implements some of the latest advances in this field
+Authors:          Markus Mottl <markus.mottl@gmail.com>
+Copyrights:       (C) 2008-2013 Markus Mottl <markus.mottl@gmail.com>
+Maintainers:      Markus Mottl <markus.mottl@gmail.com>
+License:          LGPL-2.1+ with OCaml linking exception
+LicenseFile:      COPYING.txt
+OCamlVersion:     >= 3.12
+FindlibVersion:   >= 1.3.1
+Homepage:         https://bitbucket.org/mmottl/gpr
+#Categories:
+FilesAB:          lib/version.ml.ab
+
+Plugins:          META (0.4), StdFiles (0.4), DevFiles (0.4)
+XStdFilesREADME:  false
+PostDistcleanCommand: $rmdir test/data
+
+BuildTools:       ocamlbuild, ocamldoc
+
+Library gpr
+  Path:           lib
+  FindlibName:    gpr
+  Pack:           true
+  Modules:        Interfaces,
+                  Gpr_utils,
+                  Block_diag,
+                  Cov_const,
+                  Cov_lin_ard,
+                  Cov_lin_one,
+                  Cov_se_iso,
+                  Cov_se_fat,
+                  Fitc_gp,
+                  Version
+  BuildDepends:   threads, core, lacaml, gsl
+
+Executable ocaml_gpr
+  Path:           app
+  MainIs:         ocaml_gpr.ml
+  BuildDepends:   gpr, str
+  CompiledObject: best
+
+Executable test_derivatives
+  Path:               test
+  MainIs:             test_derivatives.ml
+  Build$:             flag(tests)
+  Install:            false
+  BuildDepends:       gpr
+  CompiledObject:     best
+
+Executable save_data
+  Path:               test
+  MainIs:             save_data.ml
+  Build$:             flag(tests)
+  Install:            false
+  BuildDepends:       gpr
+  CompiledObject:     best
+
+Test test_derivatives
+  Run$:               flag(tests)
+  Command:            $test_derivatives
+  WorkingDirectory:   test
+
+#
+
+Document API
+  Title:                API reference for GPR
+  Type:                 OCamlbuild (0.4)
+  InstallDir:           $docdir/api
+  XOCamlbuildPath:      .
+  XOCamlbuildLibraries: gpr
+
+Document gpr_manual
+  Title:        GPR manual
+  Type:         custom (0.4)
+  Install:      true
+  InstallDir:   $pdfdir
+  DataFiles:    doc/gpr_manual.pdf
+  XCustom:      make -C doc gpr_manual.pdf
+  XCustomClean: make -C doc clean
+  BuildTools:   make
+
+SourceRepository trunk
+  Type:       hg
+  Location:   ssh://hg@bitbucket.org/mmottl/gpr
+  Browser:    https://bitbucket.org/mmottl/gpr
+  Tag:        release-$(pkg_version)
