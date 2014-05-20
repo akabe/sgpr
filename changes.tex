@@ -1,0 +1,928 @@
+\documentclass[10pt,a4paper]{article}
+\usepackage{bm}
+\usepackage{fullpage}
+\usepackage{hyperref}
+\usepackage{nameref}
+\usepackage{listings}
+\usepackage[scaled=0.85]{DejaVuSansMono}
+
+\title{Changes required to port OCaml-GPR library to\\Sized Linear Algebra Package interface}
+\author{Akinori Abe \hskip3em Eijiro Sumii\\Tohoku University}
+\date{\today}
+
+\lstset{
+  language=[Objective]Caml,
+  basicstyle={\ttfamily\small},
+  xleftmargin=15pt,
+  mathescape
+}
+
+\begin{document}
+\maketitle
+
+\section{Introduction}
+
+This document elaborates on the changes required for Sized GPR (\url{https://github.com/akabe/sgpr}),
+a porting of OCaml-GPR (\url{https://bitbucket.org/mmottl/gpr}) version 1.1.3
+from Lacaml (\url{https://bitbucket.org/mmottl/lacaml}) to our interface SLAP
+(Sized Linear Algebra Package, \url{https://github.com/akabe/slap}).
+See the paper \url{https://akabe.github.com/sgpr/paper.pdf} for details of SLAP.
+
+We have developed a linear algebra library interface called ``SLAP'' that guarantees consistency (with respect to
+dimensions) of matrix (and vector) operations by using \emph{generative phantom types}
+as fresh identifiers for statically checking the equality of sizes (i.e., dimensions).
+SLAP is implemented as a "more statically typed" wrapper of Lacaml,
+which does not statically ensure the consistency of sizes.
+To evaluate the usability of SLAP, we ported the OCaml-GPR library from Lacaml.
+
+To investigate the kinds and numbers of changes required for the porting,
+we added uniquely-formed comments \lstinline|(*! ... *)| on the changed lines in the SGPR
+source code.
+We classified them into 19 categories as follows:
+\begin{itemize}
+\item \nameref{sec:mechanical-changes}
+  \begin{enumerate}
+  \item \nameref{sec:S2I}
+  \item \nameref{sec:SC}
+  \item \nameref{sec:SOP}
+  \item \nameref{sec:I2S}
+  \item \nameref{sec:IDX}
+  \item \nameref{sec:RF}
+  \item \nameref{sec:IF}
+  \item \nameref{sec:SUB}
+  \item \nameref{sec:ETA}
+  \item \nameref{sec:RID}
+  \item \nameref{sec:RMDC}
+  \item \nameref{sec:ITP}
+  \end{enumerate}
+\item \nameref{sec:manual-changes}
+  \begin{enumerate}
+    \setcounter{enumi}{11}
+  \item \nameref{sec:ITA}
+  \item \nameref{sec:O2L}
+  \item \nameref{sec:EGPT}
+  \item \nameref{sec:FT}
+  \item \nameref{sec:ET}
+  \item \nameref{sec:FS}
+  \item \nameref{sec:DKS}
+  \end{enumerate}
+\end{itemize}
+We next explain the kinds of changes made through simple examples.
+
+\section{Mechanical changes}
+\label{sec:mechanical-changes}
+
+Twelve of the required kinds of changes could be made mechanically
+(i.e., automatically).
+They accounted for most of the lines of code requiring a change
+(see Section \ref{sec:results} for details).
+
+\subsection{Conversion from sizes to integers (S2I)}
+\label{sec:S2I}
+
+The following code can be compiled in Lacaml but not in SLAP.
+\begin{lstlisting}
+let n = Vec.dim x in
+for i = 1 to n do ... done
+\end{lstlisting}
+The variable \lstinline|n| is a size since
+\lstinline|Vec.dim : ('n,_) vec -> 'n size|, while an integer is
+required between \lstinline|to| and \lstinline|do|.
+(A size is a value that has a singleton type \lstinline|'n size| on natural numbers;
+i.e., evaluation of a term with type \lstinline|'n size| \emph{always}
+results in the natural number corresponding to \lstinline|'n|.)
+
+To write the code, we needed to write conversion from a size to
+an integer as follows:
+\begin{lstlisting}
+let n = Vec.dim x in
+for i = 1 to Slap.Size.to_int n (*! S2I *) do ... done
+\end{lstlisting}
+The label \lstinline|S2I| was placed on lines requiring this kind of change.
+
+\subsection{Replacing of size constants (SC)}
+\label{sec:SC}
+
+The following code results in the creation of a $1$-by-$n$ matrix \lstinline|a|.
+\begin{lstlisting}
+let a = Mat.create 1 n
+\end{lstlisting}
+It is ill-typed since the integer \lstinline|1| is passed
+to a size argument of \lstinline|Mat.create|.
+Thus, the integer constant had to be replaced with the corresponding size constant:
+\begin{lstlisting}
+let a = Mat.create Slap.Size.one (*! SC *) n
+\end{lstlisting}
+or
+\begin{lstlisting}
+module N = Slap.Size.Of_int_dyn(struct let value = 1 end) (*! SC *)
+let a = Mat.create N.value (*! SC *) n
+\end{lstlisting}
+(The functor \lstinline|Slap.Size.Of_int_dyn| returns a module
+\lstinline|N| containing the size \lstinline|N.value| that has
+the type \lstinline|N.n size| with a generative phantom
+type \lstinline|N.n| as a package of an existential quantified
+sized type like \lstinline|$\exists$n. n vec|.)
+
+\subsection{Replacing of size operations (SOP)}
+\label{sec:SOP}
+
+It was necessary to rewrite operations on integers with the
+corresponding operations on sizes when the operands were sizes.
+For example, if \lstinline|m| and \lstinline|n| are sizes,
+\begin{lstlisting}
+let a = Mat.create (m + n) n
+\end{lstlisting}
+is ill-typed since the operator \lstinline|+| requires integers
+as the left and right operands. To make this code well-typed,
+it was replaced with \lstinline|Slap.Size.add|.
+\begin{lstlisting}
+let a = Mat.create (Slap.Size.add m n) (*! SOP *) n
+\end{lstlisting}
+(see SLAP documentation for details of size operations).
+
+\subsection{Conversion from integers to sizes (I2S)}
+\label{sec:I2S}
+
+The following function \lstinline|f| returns the squared norm of the product of a vector
+\lstinline|x| and a randomly created matrix.
+\begin{lstlisting}
+open Lacaml.D
+
+let f x =
+  let n = Random.int 100 in
+  let a = Mat.random n (Vec.dim x) in
+  let y = gemv a x in
+  nrm2 y
+\end{lstlisting}
+The \lstinline|n| parameter must be given type-level size information because
+it is passed to the size argument of \lstinline|Mat.random|.
+We thus rewrote it as:
+\begin{lstlisting}
+open Slap.D
+
+let f x =
+  let n = Random.int 100 in
+  let module N = Slap.Size.Of_int_dyn(struct let value = n end) in (*! I2S *)
+  let a = Mat.random N.value (*! I2S *) (Vec.dim x) in
+  let y = gemv a x in
+  nrm2 y
+\end{lstlisting}
+
+\subsection{Replacing of index-based accesses (IDX)}
+\label{sec:IDX}
+
+The vector and matrix types (\lstinline|vec| and \lstinline|mat|)
+of Lacaml are implemented by using the OCaml module \lstinline|Bigarray|
+to share numerical arrays between OCaml and Fortran.
+In Lacaml, the syntax sugar \lstinline|x.{i,j}| for index-based
+accesses to elements of big arrays (i.e., vectors or matrices) can be used:
+\begin{lstlisting}
+a.{i, j} <- x.{i + j}
+\end{lstlisting}
+In SLAP, \lstinline|('n, _) vec| and \lstinline|('m, 'n, _) mat| are abstract
+types: i.e., the right hand sides of the type definitions are hidden
+by signature. This means that the syntax sugar cannot be used
+since the typechecker does not know that matrices and vectors are implemented
+as big arrays.
+Hence, the \lstinline|get_dyn| or \lstinline|set_dyn|
+function was used instead of the syntax sugar:
+\begin{lstlisting}
+Mat.set_dyn a i j (Vec.get_dyn x (i + j)) (*! IDX *)
+\end{lstlisting}
+
+\subsection{Replacing of flags (RF)}
+\label{sec:RF}
+
+In Lacaml, transpose flags and side flags for matrix multiplication:
+\begin{lstlisting}
+trmm ~side:`R ~transa:`T ~a b
+\end{lstlisting}
+We redefined them to represent changes in matrix type, with the change depending
+on the flag's value. Therefore, they were replaced with identifiers of SLAP:
+\begin{lstlisting}
+trmm ~side:Common.right ~transa:Common.trans (*! RF *) ~a b
+\end{lstlisting}
+Table \ref{tbl:flags} shows the correspondence between flags in Lacaml and SLAP.
+\begin{table}[tbp]
+  \centering
+  \begin{tabular}{ll}
+    \hline
+    Lacaml & SLAP \\
+    \hline
+    \lstinline|`L| & \lstinline|Slap.Common.left| \\
+    \lstinline|`R| & \lstinline|Slap.Common.right| \\
+    \hline
+    \lstinline|`N| & \lstinline|Slap.Common.normal| \\
+    \lstinline|`T| & \lstinline|Slap.Common.trans| \\
+    \lstinline|`C| & \lstinline|Slap.Common.conjtr| \\
+    \hline
+  \end{tabular}
+  \caption{Correspondence between flags in Lacaml and SLAP}
+  \label{tbl:flags}
+\end{table}
+
+\subsection{Insertion of flags (IF)}
+\label{sec:IF}
+
+In Lacaml, the transpose and side flag arguments are optional, i.e., they can be omitted.
+When the arguments are omitted, the default values are passed. For example,
+\begin{lstlisting}
+trmm ~a b
+\end{lstlisting}
+is the same as:
+\begin{lstlisting}
+trmm ~side:`L ~transa:`N ~a b
+\end{lstlisting}
+
+In SLAP, the transpose and side flag arguments are implemented as labeled arguments
+(which cannot be omitted) because they represent the constraints on matrix type.
+This means that we had to explicitly provide the default value
+(\lstinline|Slap.Common.normal| for the transpose flags and \lstinline|Slap.Common.left|
+for the side flags):
+\begin{lstlisting}
+trmm ~side:Common.left ~transa:Common.normal (*! IF *) ~a b
+\end{lstlisting}
+
+\subsection{Using of subvectors and submatrices (SUB)}
+\label{sec:SUB}
+
+All BLAS and LAPACK functions support operation on subvectors or submatrices.
+For instance, the following code copies the \lstinline|m|-by-\lstinline|n|
+submatrix in a matrix \lstinline|a|, in which element $(i,j)$ corresponds to the
+$(i+\mathit{ar}-1,j+\mathit{ac}-1)$ element of \lstinline|a|.
+\begin{lstlisting}
+lacpy ~m ~n ~ar ~ac a
+\end{lstlisting}
+
+Since our idea is that only size equality of sizes is ensured statically,
+whether the function call is safe, i.e., the submatrix is \emph{smaller} than \lstinline|a|,
+cannot be verified statically.
+However, since adding dynamic checks to all BLAS and LAPACK functions is undesirable
+because submatrix designation is auxiliary and not essential to those functions,
+we defined separate functions to return a submatrix (or a subvector) of a given matrix (or vector).
+That is, such operations were replaced with \lstinline|Slap.Vec.subvec_dyn|
+or \lstinline|Slap.Mat.submat_dyn|, such as:
+\begin{lstlisting}
+lacpy (Mat.submat_dyn m n ~ar ~ac a)
+\end{lstlisting}
+
+\subsection{Eta-conversion (ETA)}
+\label{sec:ETA}
+
+Let \lstinline|f| be a function that accepts two vectors that may have different dimensions
+and that returns \lstinline|unit|.
+\begin{lstlisting}
+let f x y = ...      (* f : ('m, 'cd1) vec -> ('n, 'cd2) vec -> unit *)
+let g = f Vec.empty  (* g : ('_n, '_cd2) vec -> unit *)
+\end{lstlisting}
+The function \lstinline|g| created by partial application is not polymorphic due to value restriction%
+\footnote{A type parameter like \lstinline|'_a| can be instantiated \emph{only once}.}.
+To recover the lost polymorphism, eta-conversion (insertion of arguments) was required:
+\begin{lstlisting}
+let f x y = ...                     (* f : ('m, 'cd1) vec -> ('n, 'cd2) vec -> unit *)
+let g y = f Vec.empty y (*! ETA *)  (* g : ('n, 'cd2) vec -> unit *)
+\end{lstlisting}
+
+\subsection{Replacing of identifiers (RID)}
+\label{sec:RID}
+
+Several identifiers needed to be replaced; e.g.,
+\begin{lstlisting}
+open Lacaml.D
+\end{lstlisting}
+was replaced with
+\begin{lstlisting}
+open Slap.D (*! RID *)
+\end{lstlisting}
+
+\subsection{Removing of dynamic checks (RMDC)}
+\label{sec:RMDC}
+
+The following dynamic check is not needed in SLAP because the type
+\lstinline|dot| statically ensures the equality of the dimensions of two vectors
+\lstinline|x| and \lstinline|y|.
+\begin{lstlisting}
+let f x y =
+  if Vec.dim x <> Vec.dim y then invalid_arg "error!";
+  dot x y (* dot : ('n, _) vec -> ('n, _) vec -> float *)
+\end{lstlisting}
+Thus, this code was rewritten as:
+\begin{lstlisting}
+let f x y =
+  (* if Vec.dim x <> Vec.dim y then invalid_arg "error!"; *) (*! RMDC *)
+  dot x y
+\end{lstlisting}
+(We commented out such dynamic checks iso that we could determine
+the number of lines containing this kind of change.)
+
+\subsection{Insertion of type parameters (ITP)}
+\label{sec:ITP}
+
+We changed the types \lstinline|vec| and \lstinline|mat| on the right hand side of a type
+definition to \lstinline|('n, 'cd) vec| and \lstinline|('m, 'n, 'cd) mat|, respectively.
+Then the type parameters \lstinline|'m|, \lstinline|'n|, and \lstinline|'cd|
+must also be added to the left hand side.
+Theoretically, it suffices to give fresh parameters to all \lstinline|vec| and \lstinline|mat|.
+For instance,
+\begin{lstlisting}
+module M : sig
+  type t
+  val f : int -> t
+end = struct
+  type t = {
+    n : int;
+    id : mat;
+  }
+  let f n =
+    let id = Mat.identity n in
+    { n; id; }
+end
+\end{lstlisting}
+was rewritten as:
+\begin{lstlisting}
+module M : sig
+  type ('a, 'b, 'c, 'd) t
+  val f : 'a size -> ('a, 'a, 'a, _) t
+end = struct
+  type ('a, 'b, 'c, 'd) t = {
+    n : 'a size;
+    id : ('b, 'c, 'd) mat;
+  }
+  let f n =
+    let id = Mat.identity n in
+    { n; id; }
+end
+\end{lstlisting}
+In the latter code, constraints of equality of sizes are unified automatically
+by the OCaml type inference engine. In practice, however, doing so
+introduces too many parameters in the OCaml-GPR library. We reduced the number by
+unifying type parameters that are known to be equal:
+\begin{lstlisting}
+module M : sig
+  type ('n, 'cnt_or_dsc) t (*! ITP *)
+  val f : 'n size -> ('n, 'cnt) t (*! ITP *)
+end = struct
+  type ('n, 'cnt_or_dsc) t = { (*! ITP *)
+    n : 'n size; (*! ITP *)
+    id : ('n, 'n, 'cnt_or_dsc) mat; (*! ITP *)
+  }
+  let f n =
+    let id = Mat.identity n in
+    { n; id; }
+end
+\end{lstlisting}
+
+\section{Manual changes}
+\label{sec:manual-changes}
+
+Seven of the require kinds of changes had to be made manually.
+To make a finer-grained distinction in each kind of changes, we gave them reference numbers such as [$n$].
+
+\subsection{Insertion of type annotations (ITA)}
+\label{sec:ITA}
+
+When a matrix operation is implemented by low-level index-based accesses, its
+size constraints cannot be inferred statically (since they are checked only at
+runtime): For example, consider the function \lstinline|axby|, which calculates
+$\alpha \bm{x} + \beta \bm{y}$ with scalar values $\alpha$ and, $\beta$, and
+vectors $\bm{x}$ and $\bm{y}$:
+\begin{lstlisting}
+open Slap.D
+
+let axby alpha x beta y =
+  let n = Vec.dim x in
+  let z = Vec.create n in
+  for i = 1 to Slap.Size.to_int n do
+    let p = alpha *. (Vec.get_dyn x i) +. beta *. (Vec.get_dyn y i) in
+    Vec.set_dyn z i p
+  done;
+  z
+\end{lstlisting}
+The dimensions of vectors \lstinline|x| and \lstinline|y| must be the same, but OCaml infers that
+they may be different:
+\begin{lstlisting}
+val axby : float -> ('n, _) vec -> float -> ('m, _) vec -> ('n, _) vec
+\end{lstlisting}
+There are two ways to solve this problem. One is to type-annotate
+\lstinline|axby| by hand:
+\begin{lstlisting}
+let axby alpha (x : ('n, _) vec) beta (y : ('n, _) vec) =
+  ...
+\end{lstlisting}
+The other way is to use high-level operations such as \lstinline|scal| and
+\lstinline|axpy| instead of low-level operations such as \lstinline|get_dyn|
+and \lstinline|set_dyn|:
+\begin{lstlisting}
+let axby alpha x beta y =
+  let z = copy y in (* z = y *)
+  scal beta z;      (* z := beta * z *)
+  axpy ~alpha ~x y; (* z := alpha * x + z *)
+  z
+\end{lstlisting}
+We did not use the second way because we rewrote the OCaml-GPR code to
+make it as simple as possible. We encountered five such functions in OCaml-GPR:
+\begin{itemize}
+\item ITA[1]: \lstinline|Gpr.Cov_se_iso.Eval.Inputs.weighted_eval|
+\item ITA[2]: \lstinline|Gpr.Gpr_utils.log_det|
+\item ITA[3]: \lstinline|Gpr.Gpr_utils.check_sparse_row_mat_sane|
+\item ITA[4]: \lstinline|Gpr.Gpr_utils.check_sparse_col_mat_sane|
+\item ITA[5]: \lstinline|Gpr.Gpr_utils.check_sparse_vec_sane|.
+\end{itemize}
+
+\subsection{Optional arguments to labeled arguments (O2L)}
+\label{sec:O2L}
+
+The following function \lstinline|f| accepts an integer and a unit:
+\begin{lstlisting}
+open Lacaml.D
+
+let f ?n () =
+  let n' = match n with
+           | None -> 10
+           | Some n -> n in
+  Vec.make n' 1.0
+\end{lstlisting}
+If the first optional argument \lstinline|?n| is omitted,
+\lstinline|10| is implicitly used as its default value.
+
+Seemingly, the code above can be rewritten as:
+\begin{lstlisting}
+open Slap.D
+
+let f ?n () =
+  let n' = match n with
+           | None -> Slap.Size.ten (* Slap.Size.ten : ten size *)
+           | Some n -> n in
+  Vec.make n' 1.0
+\end{lstlisting}
+We expect that \lstinline|?n:'n size -> unit -> ('n, _) vec| is the type for \lstinline|f|
+because it works for all \lstinline|n|, but
+\begin{lstlisting}
+val f : ?n:ten size -> unit -> (ten, _) vec
+\end{lstlisting}
+is inferred. Only \lstinline|Slap.Size.ten| can be passed to
+\lstinline|?n|; other size values cannot be passed.
+
+We thus replaced the optional argument with a (labeled) argument:
+\begin{lstlisting}
+open Slap.D
+
+let default_n = Slap.Size.ten (* the default value of n *)
+
+let f ~n () = Vec.make n 1.0
+\end{lstlisting}
+In this case, the first argument can not be omitted.
+The default value \lstinline|default_n| is passed explicitly.
+
+We applied this approach to
+\begin{itemize}
+\item O2L[1]: the optional argument \lstinline|n_rand_inducing| and
+\item O2L[2]: the optional argument \lstinline|kernel|
+\end{itemize}
+of \lstinline|Fitc_gp.Deriv_common.Optim.get_kernel_inducing|.
+In addition, we defined functions to compute their default values.
+
+\subsection{Escaping generative phantom types (EGPT)}
+\label{sec:EGPT}
+
+Consider a function that converts an array of strings into a vector:
+\begin{lstlisting}
+open Lacaml.D
+
+let f a =
+  Vec.init (Array.length a) (fun i -> float_of_string a.(i-1))
+
+let main () =
+  let a = [| "1"; "2"; "3" |] in
+  let v = f a in
+  Format.printf "%a\n" pp_vec v
+\end{lstlisting}
+This program can not be compiled in SLAP because \lstinline|Vec.init| expects
+\lstinline|'n size| as the first argument, and \lstinline|Array.length|
+returns an integer.
+Therefore, the integer must be converted into a size value with
+\lstinline|Size.Of_int_dyn|. The following code seems intuitively correct:
+\begin{lstlisting}
+open Slap.D
+
+let f a =
+  let module N = Slap.Size.Of_int_dyn(struct let value = Array.length a end) in
+  Vec.init N.value (fun i -> float_of_string a.(i-1))
+\end{lstlisting}
+However, OCaml cannot compile this code because the generative phantom type
+\lstinline|N.n| escapes its scope.
+
+There are three ways to handle this in SLAP. One is to insert the argument \lstinline|n| for
+the size of the array, and remove the generative phantom type from
+the function:
+\begin{lstlisting}
+open Slap.D
+
+let f n a =
+  if Slap.Size.to_int n <> Array.length a then invalid_arg "error";
+  Vec.init n (fun i -> float_of_string a.(i-1))
+
+let main () =
+  let a = [| "1"; "2"; "3" |] in
+  let module N = Slap.Size.Of_int_dyn(struct let value = Array.length a end) in
+  let v = f N.value a in
+  Format.printf "%a\n" pp_vec v
+\end{lstlisting}
+In this case, whether \lstinline|n| is equal
+to the length of \lstinline|a| should be \emph{dynamically} checked.
+
+Another way is to define a functor that returns a module containing the
+generative phantom type:
+\begin{lstlisting}
+open Slap.D
+
+module F (A : sig val value : string array end) : VEC = struct
+  module N = Slap.Size.Of_int_dyn(struct let value = Array.length A.value end)
+  type n = N.n (* the generative phantom type *)
+  let value = (* val value : (n, _) vec *)
+    Vec.init N.value (fun i -> float_of_string A.value.(i-1))
+end
+
+let main () =
+  let a = [| "1"; "2"; "3" |] in
+  let module V = F(struct let value = a end) in
+  Format.printf "%a\n" pp_vec V.value
+\end{lstlisting}
+where signature \lstinline|VEC| is defined as:
+\begin{lstlisting}
+module type VEC = sig
+  type n (* a generative phantom type *)
+  val value : (n, _) vec
+end
+\end{lstlisting}
+And the third way is to define \lstinline|f : string array -> (?, _) vec| by using
+a first-class module instead of a functor:
+\begin{lstlisting}
+open Slap.D
+
+let f a =
+  let module N = Slap.Size.Of_int_dyn(struct let value = Array.length a end) in
+  let module V = struct
+      type n = N.n
+      let value = Vec.init N.value (fun i -> float_of_string a.(i-1))
+    end in
+  (module V : VEC)
+
+let main () =
+  let a = [| "1"; "2"; "3" |] in
+  let module V = (val (f a) : VEC) in
+  Format.printf "%a\n" pp_vec V.value
+\end{lstlisting}
+However, a type annotation of a module is required with the third way.
+We thus used the first way temporarily in SGPR as follows:
+\begin{itemize}
+\item EGPT[1]: Two \lstinline|'n size| arguments were added to
+  \lstinline|Gpr.Cov_*.Eval.Inputs.create|.
+\item EGPT[2]: The labeled argument \lstinline|n_hypers : 'n size|
+  was added to \lstinline|Gpr.Fitc_gp.Deriv_common.Optim.get_hypers_val|.
+\item EGPT[3]: Two \lstinline|'n size| arguments were added to
+  \lstinline|read_training_samples| in app/ocaml\_gpr.ml.
+\end{itemize}
+We plan to consider rewriting SGPR by using the third way because the first way
+requires dynamic checks.
+
+\subsection{Function types that depend on values of arguments (FT)}
+\label{sec:FT}
+
+The following function \lstinline|f| changes the dimension of a returned vector
+depending on the value of the argument \lstinline|b|.
+\begin{lstlisting}
+open Lacaml.D
+
+let f b n = Vec.make0 (if b then n else n + 1)
+\end{lstlisting}
+In SLAP, the expression \lstinline|(if b then n else Slap.Size.succ n)| cannot be compiled
+because the terms \lstinline|n| and \lstinline|Slap.Size.succ n| have different types
+(the former is \lstinline|'n size| and the latter is \lstinline|'n s size|).
+To obtain a function type that depends on the value of \lstinline|b|, we rewrote the
+above code as:
+\begin{lstlisting}
+open Slap.D
+
+module M : sig
+  type ('n, 'm) t
+  val b_tru : ('n, 'n) t
+  val b_fls : ('n, 'n s) t
+  val f : ('n, 'm) t -> 'n size -> ('m, _) vec
+end = struct
+  type ('n, 'm) t = 'n size -> 'm size
+  let b_tru n = n
+  let b_fls n = Slap.Size.succ n
+  let f b n = Vec.make0 (b n)
+end
+\end{lstlisting}
+The \lstinline|b_tru| and \lstinline|b_fls| parameters are passed to the first argument instead of
+\lstinline|true| and \lstinline|false|, respectively. We found three such cases in OCaml-GPR:
+
+\begin{itemize}
+\item FT[1]: The functions \lstinline|SGD.create| and \lstinline|SMD.create| in the module
+  \lstinline|Fitc_gp.Deriv_common.Optim| have types dependent on the value of the argument
+  \lstinline|learn_sigma2 : bool|. We define the constants \lstinline|learn_sigma| and
+  \lstinline|not_learn_sigma2| to use for the argument instead of \lstinline|true| and
+  \lstinline|false|.
+\item FT[2]: The constraint on type parameters for the record type
+   \lstinline|('D,'d,'m) Cov_se_fat.Params.params| changes depending on the value in
+   its field \lstinline|tproj|.
+   This is not a function, but the required technique is very similar.
+\item FT[3]: The same technique was applied to the argument \lstinline|n| of the function
+  \lstinline|read_test_samples| (app/ocaml\_gpr.ml).
+\end{itemize}
+
+\subsection{Expression types that depend on values of free variables (ET)}
+\label{sec:ET}
+
+The function \lstinline|f| returns the squared norm of the product of a vector
+\lstinline|x| and a randomly created matrix:
+\begin{lstlisting}
+open Lacaml.D
+
+let f b x =
+  let n = Vec.dim x in
+  let m = if b then n + 1 else n in
+  let a = Mat.random m n in
+  let y = gemv a x in
+  nrm2 y
+\end{lstlisting}
+This code is rewritten as:
+\begin{lstlisting}
+open Slap.D
+
+let f b x =  (* f : bool -> ('n, _) vec -> float *)
+  let n = Vec.dim x in
+  let g m = (*! ET *)  (* g : 'm size -> float *)
+    let a = Mat.random m n in
+    let y = gemv a x in
+    nrm2 y
+  in (*! ET *)
+  if b then g (Slap.Size.succ n) (*! SOP *) else g n (*! ET *)
+\end{lstlisting}
+This change is of a kind similar to \lstinline|FT|, but the interface of a function is not
+affected by this kind of change.
+
+We applied this kind of changes to two expressions in app/ocaml\_gpr.ml:
+\begin{itemize}
+\item ET[1]: The type of the expression that returns \lstinline|d| and \lstinline|tproj|
+  in the function \lstinline|train| depends on the value of the argument
+  \lstinline|args.dim_red| of the function.
+\item ET[2]: The type of the expression that returns \lstinline|inputs| in the function
+   \lstinline|test| depends on the length of an array \lstinline|samples| loaded
+   from a file.
+\end{itemize}
+
+\subsection{Fitting of signatures (FS)}
+\label{sec:FS}
+
+The above-mentioned changes (including mechanical changes) are relatively local.
+In contrast, the FS and DKS changes discussed here are widespread and somewhat ad hoc.
+Before discussing FS, we explain several important modules in the OCaml-GPR library
+and their relationships. OCaml-GPR supports kernel-based%
+\footnote{A \emph{kernel method} (or \emph{kernel trick}) is an approach to extending
+a linear algorithm on the basis of inner product of the vectors to a nonlinear one by using
+\emph{kernel functions}.}
+fitting of (nonlinear) functions.
+Kernel functions for the fitting are defined as modules, and OCaml-GPR
+provides five predefined kernel functions (see OCaml-GPR documentation
+for details):
+\begin{itemize}
+\item \lstinline|Gpr.Cov_const|
+\item \lstinline|Gpr.Cov_lin_one|
+\item \lstinline|Gpr.Cov_lin_ard|
+\item \lstinline|Gpr.Cov_se_iso|
+\item \lstinline|Gpr.Cov_se_fat|
+\end{itemize}
+These kernel modules cannot be used for fitting directly.
+To make a module suitable for fitting, a programmer needs to pass it to the functor
+\lstinline|Gpr.Fitc_gp.Make| or \lstinline|Gpr.Fitc_gp.Make_deriv|.
+
+\subsubsection{Types of kernels}
+
+Each kernel function accepts two input vectors and parameters such as scalar
+values, vectors, and matrices.
+For example, a constant kernel \lstinline|Cov_const| calculates
+$k(\bm{x}, \bm{y}) = 1 / \theta^2$ with a real constant $\theta$,
+and the kernel function of \lstinline|Cov_lin_ard| needs a vector of
+automatic relevance determination (ARD) parameters for computing
+the covariance of two input vectors with ARD.
+
+The parameters are embedded in the data structure of each kernel.
+Thus, if the kernel requires vectors or matrices as parameters,
+their type parameters are added on the left hand side of the type definition
+of the kernel type (cf. Section \ref{sec:ITP}).
+The number of type parameters depends on the kernel type because
+the number and the types of parameters differ from each other
+(e.g. the kernel type has no type parameters in \lstinline|Cov_const|
+but two in \lstinline|Cov_lin_ard|). However,
+all kernel modules need to be given the same signature in order to pass them to
+the functor \lstinline|Gpr.Fitc_gp.Make| or \lstinline|Gpr.Fitc_gp.Make_deriv|.
+Therefore, it is necessary to give all kernels the same type.
+
+We fitted each kernel type to the type \lstinline|('D, 'd, 'm) t| of the kernel
+\lstinline|Cov_se_fat|, which has the most type parameters.
+It has three type parameters, but some or all of them are phantom for some modules
+(e.g., all of them are phantom for \lstinline|Cov_const| while only
+\lstinline|'m| is phantom for \lstinline|Cov_lin_ard|.)
+
+\subsubsection{Generalization of kernel types}
+
+The kernel of \lstinline|Cov_se_fat| contains dimensionality reduction from
+\lstinline|'D|-dimensional space to \lstinline|'d|-dimensional, so \lstinline|'D| often
+differs from \lstinline|'d|.
+In contrast, in other kernels, \lstinline|'D| is always the same as \lstinline|'d|
+because there is no input dimension reduction.
+Here we explain the safe generalization of the latter type
+\lstinline|('d,'d,'m) t| to the former type \lstinline|('D,'d,'m) t|
+through the following simple example of a signature for modules for
+conversion of input vectors.
+(Type parameters for subtyping of vectors and matrices are omitted.)
+\begin{lstlisting}
+module type S = sig
+  type ('D, 'd) t
+  val calc_vec : ('D, 'd) t -> 'D vec -> 'd vec
+  val calc_mat : ('D, 'd) t -> ('D, 'n) mat -> ('d, 'n) mat
+end
+\end{lstlisting}
+The \lstinline|calc_vec| converts a \lstinline|'D|-dimensional input vector into
+a \lstinline|'d|-dimensional output vector.
+Similarly, \lstinline|calc_mat| converts \lstinline|'n| (column) vectors.
+(\lstinline|('D, 'n) mat| is a type of array of \lstinline|'n| vectors
+with dimensions of \lstinline|'D|.)
+
+It is straightforward to implement conversion including dimensionality reduction
+(corresponding to \lstinline|Cov_se_fat|).
+For example, the module \lstinline|M0| calculates $2 \bm{P}^\top \bm{x}$
+with a \lstinline|'D|-by-\lstinline|'d| matrix $\bm{P}$ for dimensionality
+reduction and a \lstinline|'D|-dimensional input vector $\bm{x}$:
+\begin{lstlisting}
+module M0 : S with type ('D, 'd) t = ('D, 'd) mat = struct
+  type ('D, 'd) t = ('D, 'd) mat (* a matrix for dimensionality reduction *)
+
+  let calc_vec p x =
+    let y = gemv ~trans:Common.trans p x (* y : 'd vec *)
+    scal 2.0 y;
+    y
+
+  let calc_mat p x =
+    let y = gemm ~transa:Common.trans p ~transb:Common.normal x (* y : ('d, 'n) mat *)
+    Mat.scal 2.0 y;
+    y
+end
+\end{lstlisting}
+With a little ingenuity, we define a module for conversion that does not reduce
+the dimensions:
+\begin{lstlisting}
+module M1 : sig
+  include S
+  val create : 'd size -> ('d, 'd) t (* constructor of ('D, 'd) t *)
+end = struct
+  type ('D, 'd) t = ('D, 'd) mat
+  let create d = Mat.identity d (* return a d-by-d identity matrix *)
+
+  (* The implementation of calc_vec and calc_mat is the same as M0. *)
+end
+\end{lstlisting}
+Note that the return type of \lstinline|create|, the constructor of
+the abstract type \lstinline|('D, 'd) t|, is \lstinline|('d, 'd) t|,
+not \lstinline|('D, 'd) t|.
+The value that can be passed to \lstinline|calc_vec| or \lstinline|calc_mat| is
+made only by \lstinline|create|. Thus, we can consider that a practical type
+for the first argument of \lstinline|calc_vec| and \lstinline|calc_mat| is
+\lstinline|('d, 'd) t|.
+
+This approach is inefficient because a huge identity matrix must be
+multiplied when \lstinline|d| is large.
+As a more efficient approach, we used identity functions instead of
+the identity matrix:
+\begin{lstlisting}
+module M2 : sig
+  include S
+  val create : unit -> ('d, 'd) t
+end = struct
+  type ('D, 'd) t = {id : 'n . ('D vec -> 'd vec) * (('D, 'n) mat -> ('d, 'n) mat)}
+  let create () = {id = (fun x -> x), (fun x -> x)}
+
+  let calc_vec {id = (id, _)} x =
+    let y = id x in (* y : 'd vec *)
+    scal 2 y;
+    y
+
+  let calc_mat {id = (_, id)} x =
+    let y = id x in (* y : ('d, 'n) mat *)
+    Mat.scal 2 y;
+    y
+end
+\end{lstlisting}
+First-class polymorphism (extension of OCaml) was used for the definition of \lstinline|('D, 'd) M2.t|.
+There is also a similar solution using only ML types:
+\begin{lstlisting}
+module type S3 = sig
+  type ('D, 'd, 'n) t (* the type parameter 'n is added. *)
+  val calc_vec : ('D, 'd, _) t -> 'D vec -> 'd vec
+  val calc_mat : ('D, 'd, 'n) t -> ('D, 'n) mat -> ('d, 'n) mat
+end
+
+module M3 : sig
+  include S3
+  val create : unit -> ('d, 'd, 'n) t
+end = struct
+  type ('D, 'd, 'n) t = ('D vec -> 'd vec) * (('D, 'n) mat -> ('d, 'n) mat)
+  let create () = (fun x -> x), (fun x -> x)
+  let calc_vec (id, _) x = id x
+  let calc_mat (_, id) x = id x
+end
+\end{lstlisting}
+In the above code, the type parameter \lstinline|'n| is inserted on the left side hand
+of the type definition. The implementation of \lstinline|M3| is a little simpler than that of
+\lstinline|M2|, but the behavior of \lstinline|M3.calc_mat| is not the same as those of
+\lstinline|M1.calc_mat| and \lstinline|M2.calc_mat|; e.g., the function types for
+\begin{lstlisting}
+let f1 t x y = (M1.calc_mat t x), (M1.calc_mat t y)
+let f2 t x y = (M2.calc_mat t x), (M2.calc_mat t y)
+let f3 t x y = (M3.calc_mat t x), (M3.calc_mat t y)
+\end{lstlisting}
+are
+\begin{lstlisting}
+val f1 : ('D, 'd) M1.t     -> ('D, 'm) mat -> ('D, 'n) mat -> ('d, 'm) mat * ('d, 'n) mat
+val f2 : ('D, 'd) M2.t     -> ('D, 'm) mat -> ('D, 'n) mat -> ('d, 'm) mat * ('d, 'n) mat
+val f3 : ('D, 'd, 'n) M3.t -> ('D, 'n) mat -> ('D, 'n) mat -> ('d, 'n) mat * ('d, 'n) mat
+\end{lstlisting}
+The dimensions of the returned matrices are different for \lstinline|f1| and \lstinline|f2|
+but the same for \lstinline|f3|.
+In other words, the polymorphism is restricted by using \lstinline|M3.calc_mat|.
+Therefore, we used \lstinline|M2|.
+
+\subsection{Default kernel size (DKS)}
+\label{sec:DKS}
+
+Each \lstinline|Cov_*| module provides the function
+\lstinline|Eval.Inputs.create_default_kernel_params| to generate the default
+parameter for its kernel function.
+The return type of the function is \lstinline|('D,('D,ten) min,'m) Kernel.params|
+in \lstinline|Cov_se_fat| but \lstinline|('D,'D,'m) Kernel.params| in other
+\lstinline|Cov_*| modules.
+To give \lstinline|Cov_se_fat| and other \lstinline|Cov_*| modules the same signature,
+we defined original type \lstinline|'D default_kernel_size| for the second type
+parameter of \lstinline|Kernel.params|.
+With this change, the function type for the default kernel parameter became:
+\begin{lstlisting}
+val create_default_kernel_params : ... -> ('D, 'D default_kernel_size, 'm) Kernel.params
+\end{lstlisting}
+The original type is defined as
+\begin{lstlisting}
+type 'D default_kernel_size = ('D, Slap.Size.ten) Slap.Size.min
+\end{lstlisting}
+in \lstinline|Cov_se_fat| and
+\begin{lstlisting}
+type 'D default_kernel_size = 'D
+\end{lstlisting}
+in other \lstinline|Cov_*| modules.
+
+\section{Results}
+\label{sec:results}
+
+Table \ref{tbl:mechanical} shows the number of lines requiring changes that could be made
+mechanically and the corresponding percentages.
+The ``Total'' in the rightmost column is the number of lines requiring at least one changes,
+which is not equal to the simple summation of all changes because a line may have required
+more than one change.
+The number of lines for ITP was large (6.17 \%) because OCaml-GPR is constructed of several large
+modules, so the definitions of signatures are long.
+Most of the ITP changes have been made in lib/interfaces.ml, which defines all signatures used in
+OCaml-GPR.
+The number for IDX was the second largest (3.56 \%) because index-based accesses are
+frequently used in OCaml-GPR.
+They are also used when they could be replaced with high-level matrix operations such as
+\lstinline|map|, etc.
+It should thus be possible to reduce their number.
+\begin{table}[tbp]
+  \caption{Number and percentage of lines requiring changes that could be made mechanically}
+  \label{tbl:mechanical}
+  \centering
+  {\footnotesize\input{tblmech}}
+\end{table}
+
+Table \ref{tbl:manual} shows the number and percentages of lines for which the required
+changes had to be made manually, and Table \ref{tbl:all} shows the total amounts for all changes.
+Overall, 18.39 \% of the lines required at least one change, out of which 15.42 \% were
+mechanical and 3.61 \% were manual. From these results, we conjecture in general that
+the number of non-trivial changes required for a user program of SLAP is small,
+but further investigation is necessary.
+\begin{table}[tbp]
+  \caption{Number and percentage of lines requiring changes that had to be made manual}
+  \label{tbl:manual}
+  \centering
+  {\footnotesize\input{tblman}}
+\end{table}
+\begin{table}[tbp]
+  \caption{Number and percentage of all lines requiring changes}
+  \label{tbl:all}
+  \centering
+  {\footnotesize\input{tblall}}
+\end{table}
+
+\end{document}
